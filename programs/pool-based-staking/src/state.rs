@@ -1,4 +1,5 @@
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::clock;
 
 use crate::constants::*;
 use crate::errors::*;
@@ -25,13 +26,13 @@ pub struct Vault {
 impl Vault {
     pub const LEN: usize = std::mem::size_of::<Vault>();
 
-    fn start_payout_schedule(&mut self) {
+    pub fn start_payout_schedule(&mut self) {
         let now: u64 = clock::Clock::get().unwrap().unix_timestamp.try_into().unwrap();
         self.payout_schedule_started_time = now;
         self.payout_round = 1;
     }
 
-    fn update_payout_round(&mut self) {
+    pub fn update_payout_round(&mut self) {
         let now: u64 = clock::Clock::get().unwrap().unix_timestamp.try_into().unwrap();
         if self.payout_schedule_started_time == 0 || self.total_eligible_count == 0 ||
             now < self.payout_schedule_started_time.checked_add(
@@ -40,15 +41,15 @@ impl Vault {
             return;
         }
         let prev_round = self.payout_round;
-        self.payout_round = now.checked_sub(payout_schedule_started_time).unwrap().checked_div(payout_interval).unwrap().checked_add(1).unwrap();
-        let added_round = self.payout_round.checked_sub(prev_round);
-        let earned = self.payout_amount.checked_div(self.total_eligible_count).unwrap().checked_mul(added_round).unwrap();
+        self.payout_round = now.checked_sub(self.payout_schedule_started_time).unwrap().checked_div(self.payout_interval).unwrap().checked_add(1).unwrap().try_into().unwrap();
+        let added_round = self.payout_round.checked_sub(prev_round).unwrap();
+        let earned = self.payout_amount.checked_div(self.total_eligible_count as u64).unwrap().checked_mul(added_round as u64).unwrap();
         for i in 0..TOTAL_COLLECTION_COUNT {
             let mut balance_item = self.total_balance_items[i];
             if balance_item.state == 1 {
                 balance_item.state = 2;
                 balance_item.balance = balance_item.balance.checked_add(earned).unwrap();
-                self.total_eligible_count = self.eligible_count.checked_add(1).unwrap();
+                self.total_eligible_count = self.total_eligible_count.checked_add(1).unwrap();
                 self.total_balance_items[i] = balance_item;
             }
         }
@@ -56,7 +57,7 @@ impl Vault {
 
     fn add_balance_item(&mut self) -> usize {
         for i in 0..TOTAL_COLLECTION_COUNT {
-            let balance_item = self.total_balance_items[i];
+            let mut balance_item = self.total_balance_items[i];
             if balance_item.state == 0 {
                 balance_item.state = 1;
                 self.total_staked_count = self.total_staked_count.checked_add(1).unwrap();
@@ -92,7 +93,7 @@ impl Default for Vault {
             total_amount: 0,
             stake_fee: 0,
             unstake_fee: 0,
-            total_items_count: 0
+            total_items_count: 0,
             bump: 0,
             total_balance_items: [BalanceItem::default(); TOTAL_COLLECTION_COUNT],
         }
@@ -106,7 +107,7 @@ pub struct BalanceItem {
     pub state: u8,
 }
 
-impl default for BalanceItem {
+impl Default for BalanceItem {
     fn default() -> BalanceItem {
         BalanceItem {
             balance: 0,
@@ -128,10 +129,11 @@ pub struct User {
 impl User {
     pub const LEN: usize = std::mem::size_of::<User>() + StakedNft::LEN * MAX_NFT_PER_USER;
 
-    fn add_item(&mut self, vault: &RefMut<Vault>, mint: Pubkey) -> Result<()> {
-        if self.staked_items.iter().any(|x| x.mint == mint) return Error(CustomError::AlreadyStaked.into());
+    pub fn add_item(&mut self, vault: &mut Vault, mint: Pubkey) -> Result<()> {
+        require!(self.staked_items.iter().any(|x| x.mint == mint) == false, CustomError::AlreadyStaked);
+        
         let index = vault.add_balance_item();
-        if vault.staked_items[index].state == 2 {
+        if vault.total_balance_items[index].state == 2 {
             self.eligible_count = self.eligible_count.checked_add(1).unwrap();
         }
         self.mint_staked_count = self.mint_staked_count.checked_add(1).unwrap();
@@ -139,15 +141,26 @@ impl User {
         Ok(())
     }
 
-    fn remove_item(&mut self, vault: &RefMut<Vault>, mint: Pubkey) -> Result<()> {
+    pub fn remove_item(&mut self, vault: &mut Vault, mint: Pubkey) -> Result<()> {
         let index = self.staked_items.iter().position(|x| x.mint == mint).unwrap();
-        if vault.staked_items[index].state == 2 {
+        if vault.total_balance_items[index].state == 2 {
             self.eligible_count = self.eligible_count.checked_sub(1).unwrap();
         }
         self.mint_staked_count = self.mint_staked_count.checked_sub(1).unwrap();
         vault.remove_balance_item(index);
 
         Ok(())
+    }
+
+    pub fn claim(&mut self, vault: &mut Vault) -> u64 {
+        let mut total_pending_balance = 0u64;
+        for i in 0..self.mint_staked_count {
+            let index = self.staked_items[i as usize].index;
+            total_pending_balance = total_pending_balance.checked_add(vault.total_balance_items[index].balance).unwrap();
+            vault.total_balance_items[index].balance = 0;
+        }
+
+        total_pending_balance
     }
 }
 
