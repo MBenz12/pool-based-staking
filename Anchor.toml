@@ -1,0 +1,14 @@
+[features]
+seeds = false
+[programs.mainnet]
+nft_vault = "7sDX4xdZmckRzXMuFAiEVwimH6zph43edCBiHkVa4DeV"
+
+[registry]
+url = "https://anchor.projectserum.com"
+
+[provider]
+cluster = "mainnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
